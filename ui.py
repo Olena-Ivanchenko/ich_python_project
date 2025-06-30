@@ -2,9 +2,9 @@
 UI module for interacting with the user and launching the program.
 (Модуль пользовательского интерфейса для взаимодействия с пользователем и запуска программы)
 """
-from typing import List, Tuple, Optional
-from tabulate import tabulate
-from typing import List, Dict
+from formatter import format_results
+from typing import List, Tuple, Optional, Dict
+
 
 def main_menu() -> int:
     """
@@ -113,20 +113,13 @@ def show_error(message: str) -> None:
 
 def show_results(results: List[Dict]) -> None:
     """
-    Displays a list of movies as a table using tabulate
-    (Показывает список фильмов в виде таблицы с использованием tabulate.)
+    Displays a list of movies using formatter module.
+    (Показывает список фильмов с помощью модуля форматирования)
 
     Args:
-        results (List[Dict]): List of movies.
+        results (List[Dict]): Список фильмов, полученный из MySQL
     """
-    if not results:
-        print("Ничего не найдено.")
-        return
-
-    table = [[row.get("title", "—"), row.get("release_year", "—"), row.get("rating", "—")] for row in results]
-    headers = ["Название", "Год", "Рейтинг"]
-
-    print("\n" + tabulate(table, headers=headers, tablefmt="grid", stralign="left"))
+    format_results(results, mode="movies")
 
 
 def show_statistics(title: str, queries: List[dict]) -> None:

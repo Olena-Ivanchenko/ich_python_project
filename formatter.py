@@ -52,4 +52,10 @@ def format_results(data: List[Dict], mode: str = "movies") -> None:
         return
 
     # Output formatted table (Вывод отформатированной таблицы)
-    print("\n" + tabulate(table, headers = headers, tablefmt = "grid", stralign = "left"))
+    # Output formatted table (Вывод отформатированной таблицы)
+    if mode == "movies":
+        print("\nРезультаты поиска:")
+    elif mode == "logs":
+        print("\nСтатистика запросов:")
+
+    print("\n" + tabulate(table, headers=headers, tablefmt="grid", stralign="left"))
