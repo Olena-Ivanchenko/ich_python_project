@@ -1,124 +1,164 @@
 """
-Main application menu
-(Главное меню приложения)
+Main application module for the Movie Search project.
+(Главный модуль приложения "Movie Search")
+
+Handles application startup, main loop, user input routing,
+database connections, logging, and graceful shutdown.
+(Обрабатывает запуск приложения, главный цикл, маршрутизацию пользовательского ввода,
+подключения к базе данных, логирование и корректное завершение работы.)
 """
 
-import ui
-import mysql_connector
 import config
-from log_writer import log_search, logger
-import log_stats
-from formatter import format_results
+import mysql_connector
+import user_interface as ui
+import formatter
+from log_writer import MongoLogger
+from log_stats import get_top_searches, get_recent_unique_searches
+from typing import Callable, Any
 
+def log_keyword_summary(keyword: str, found_count: int, logger: MongoLogger) -> None:
+    """
+    Logs the summary of a keyword search event.
+    (Логирует результат поиска по ключевому слову.)
 
-def search_by_keyword_menu(mysql_conn):
-    logger.info("Запуск поиска по ключевому слову.")
-    keyword = ui.get_keyword_input()
+    Args:
+        keyword (str): Search keyword. (Ключевое слово для поиска)
+        found_count (int): Number of results found. (Количество найденных результатов)
+        logger (MongoLogger): Logger instance. (Экземпляр логгера)
+    """
+    status = "found" if found_count > 0 else "not_found"
+    logger.log_event(
+        "keyword_summary",
+        {
+            "keyword": keyword,
+            "status": status,
+            "found_count": found_count
+        },
+        level="info"
+    )
+
+def show_paginated_results(
+    search_func: Callable[..., list],
+    *args: Any,
+    logger: MongoLogger
+) -> None:
+    """
+    Displays paginated search results, handles continuation and input retries.
+    (Отображает результаты поиска постранично, обрабатывает запросы на продолжение.)
+
+    Args:
+        search_func (Callable[..., list]): Search function. (Функция поиска)
+        *args (Any): Arguments to pass to search function. (Аргументы для функции поиска)
+        logger (MongoLogger): Logger instance. (Экземпляр логгера)
+    """
     offset = 0
-    try:
-        while True:
-            results = mysql_connector.search_by_keyword(mysql_conn, keyword, offset=offset)
-            ui.show_results(results)
-            log_search("keyword", {"keyword": keyword}, len(results))
-            logger.debug(f"Найдено {len(results)} результатов по ключевому слову '{keyword}'.")
-            if len(results) < 10 or not ui.continue_prompt():
+    while True:
+        results = search_func(*args, offset=offset, logger=logger)
+
+        # Log only the first page for keyword search (Лог только при первой странице для ключевого слова)
+        if offset == 0 and search_func.__name__ == "search_by_keyword":
+            keyword = args[1] if len(args) > 1 else ""
+            log_keyword_summary(keyword, len(results), logger)
+
+        ui.show_results(results)
+
+        if not results:
+            ui.print_message("По вашему запросу ничего не найдено.")
+            if not ui.continue_or_menu_prompt(logger):
                 break
-            offset += 10
+            new_keyword = ui.get_keyword_input(logger)
+            offset = 0
+            args = (args[0], new_keyword)
+            continue
+
+        if len(results) < 10 or not ui.continue_prompt(logger):
+            break
+        offset += 10
+
+def main() -> None:
+    """
+    Entry point of the Movie Search application.
+    (Точка входа в приложение Movie Search.)
+
+    Sets up logging, database connections, runs main menu loop,
+    and ensures graceful shutdown.
+    (Настраивает логирование, подключение к базе данных,
+    запускает главный цикл меню и обеспечивает корректное завершение работы.)
+    """
+    logger = MongoLogger()
+    logger.log_event("startup", {"description": "MongoLogger успешно инициализирован."}, level="info")
+
+    try:
+        mysql_conn = mysql_connector.connection(config.MYSQL_CONFIG, logger=logger)
+        logger.log_event(
+            "db_connected",
+            {"description": f"Установлено соединение с MySQL на хосте {config.MYSQL_CONFIG['host']}"},
+            level="info"
+        )
     except Exception as e:
-        logger.error("Ошибка при поиске по ключевому слову", exc_info=True)
-        ui.show_error(f"Ошибка: {e}")
-        log_search("error", {"type": "keyword", "message": str(e)}, 0)
+        ui.show_error("Ошибка подключения к базе данных. Попробуйте позже.", logger=logger)
+        logger.log_event(
+            "db_connection_error",
+            {"description": "Ошибка подключения к MySQL", "error": str(e)},
+            level="error"
+        )
+        return
 
+    ui.print_separator()
+    ui.print_message("Добро пожаловать в Movie Search! Найдём кино под настроение")
+    ui.print_separator()
 
-def search_by_genre_and_year_menu(mysql_conn):
-    logger.info("Запуск поиска по жанру и годам.")
-    genres, min_year, max_year = mysql_connector.get_genre_and_years(mysql_conn)
-    genre, year_from, year_to = ui.genre_year_input(genres, min_year, max_year)
-    if genre:
-        offset = 0
-        try:
-            while True:
-                results = mysql_connector.search_by_genre_and_year(mysql_conn, genre, year_from, year_to, offset=offset)
-                ui.show_results(results)
-                log_search("genre_year", {
-                    "genre": genre,
-                    "year_from": year_from,
-                    "year_to": year_to
-                }, len(results))
-                logger.debug(f"Найдено {len(results)} фильмов в жанре '{genre}' за {year_from}-{year_to}.")
-                if len(results) < 10 or not ui.continue_prompt():
-                    break
-                offset += 10
-        except Exception as e:
-            logger.error("Ошибка при поиске по жанру и годам", exc_info=True)
-            ui.show_error(f"Ошибка: {e}")
-            log_search("error", {"type": "genre_year", "message": str(e)}, 0)
+    while True:
+        choice = ui.main_menu(logger)
 
+        if choice == 1:
+            # Keyword search (Поиск по ключевому слову)
+            keyword = ui.get_keyword_input(logger)
+            logger.log_event("search_by_keyword", {"keyword": keyword}, level="info")
+            show_paginated_results(mysql_connector.search_by_keyword, mysql_conn, keyword, logger=logger)
 
-def show_statistics_menu():
-    logger.info("Показ меню статистики.")
-    choice = ui.show_statistics_menu()
-    if choice == "1":
-        logger.info("Показ популярных запросов.")
-        try:
-            stats = log_stats.get_top_searches()
-            logger.debug(f"Получено {len(stats)} популярных запросов.")
-            format_results(stats, mode="logs")
-        except Exception as e:
-            logger.error("Ошибка при получении популярных запросов", exc_info=True)
-            ui.show_error(f"Ошибка статистики: {e}")
-    elif choice == "2":
-        logger.info("Показ последних уникальных запросов.")
-        try:
-            stats = log_stats.get_recent_unique_searches()
-            logger.debug(f"Получено {len(stats)} уникальных запросов.")
-            format_results(stats, mode="logs")
-        except Exception as e:
-            logger.error("Ошибка при получении последних уникальных запросов", exc_info=True)
-            ui.show_error(f"Ошибка статистики: {e}")
-    else:
-        ui.show_error("Некорректный выбор статистики.")
-        logger.warning("Пользователь выбрал недопустимый пункт статистики.")
+        elif choice == 2:
+            # Genre + year range search (Поиск по жанру и годам)
+            genres, min_year, max_year = mysql_connector.get_genre_and_years(mysql_conn, logger=logger)
+            genre, year_from, year_to = ui.genre_year_input(genres, min_year, max_year, logger=logger)
+            if genre is None:
+                continue
+            logger.log_event(
+                "search_by_genre_year",
+                {"genre": genre, "year_from": year_from, "year_to": year_to},
+                level="info"
+            )
+            show_paginated_results(
+                mysql_connector.search_by_genre_and_year,
+                mysql_conn,
+                genre,
+                year_from,
+                year_to,
+                logger=logger
+            )
 
+        elif choice == 3:
+            # View statistics (Просмотр статистики)
+            ui.print_statistics_menu()
+            stat_choice = ui.get_statistics_choice(logger)
+            results = (
+                get_top_searches(logger=logger)
+                if stat_choice == "1"
+                else get_recent_unique_searches(logger=logger)
+            )
+            formatter.format_results(results, mode="logs")
 
-def main():
-    """
-    Main application loop.
-    (Основной цикл приложения)
-    """
-    mysql_conn = mysql_connector.connection(config.MYSQL_CONFIG)
-    logger.info("Успешное подключение к MySQL.")
-    logger.info("Приложение запущено.")
+        elif choice == 4:
+            # Exit (Выход из программы)
+            ui.print_message("Спасибо за использование Movie Search. До встречи!")
+            logger.log_event(
+                "shutdown",
+                {"description": "Пользователь завершил работу с приложением"},
+                level="info"
+            )
+            break
 
-    print()  # 🔹 Чистая строка для отделения логов от интерфейса
-
-    try:
-        ui.print_message("Добро пожаловать в Movie Search! Найдём кино под настроение")
-        while True:
-            choice = ui.main_menu()
-            logger.debug(f"Выбор пользователя в главном меню: {choice}")
-
-            if choice == 1:
-                search_by_keyword_menu(mysql_conn)
-            elif choice == 2:
-                search_by_genre_and_year_menu(mysql_conn)
-            elif choice == 3:
-                show_statistics_menu()
-            elif choice == 4:
-                ui.print_message("До свидания!")
-                logger.info("Выход из приложения пользователем.")
-                break
-            else:
-                ui.show_error("Пожалуйста, выберите пункт от 1 до 4.")
-                logger.warning(f"Недопустимый выбор в меню: {choice}")
-    finally:
-        mysql_conn.close()
-        logger.info("Соединение с MySQL закрыто.")
-
+    logger.close()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        ui.print_message("\nПриложение завершено пользователем.")
-        logger.info("Завершение через KeyboardInterrupt.")
+    main()
